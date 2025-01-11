@@ -107,7 +107,7 @@ Message(evt, function(msg)
             function(v: gcra.RateLimiter<string>) return v end
         )
 
-        if ratelimiter:attemptAction(channelId) then
+        if ratelimiter:attempt_action(channelId) then
             if reject == nil or reject.Slowdown < setting.Slowdown then
                 reject = setting
             end
