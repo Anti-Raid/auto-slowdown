@@ -8,7 +8,7 @@ local IntervalStrategy = require "./IntervalStrategy"
 local Message = require "@antiraid-ext/events/discord/Message"
 local restTypes = require "@discord-types/restTypes"
 local discordTypes = require "@discord-types/apiTypes"
-local stringsExt = require "@antiraid-ext/strings"
+local string_splitn = require "@antiraid-ext/strings/splitn"
   
 local evt: Primitives.Event, ctx: Primitives.TemplateContext = ...
 
@@ -90,7 +90,7 @@ local function ParseConfigString(config: string): {ConfigString}
     config, _ = string.gsub(config, "%s+", "")
     local strategies = {}
     for _, strategy in ipairs(string.split(config, "/")) do
-        local parts = stringsExt.string_splitn(strategy, "=", 1)
+        local parts = string_splitn(strategy, "=", 1)
         if #parts == 2 then
             table.insert(strategies, {parts[1], parts[2]})
         end
