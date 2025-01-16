@@ -1,9 +1,6 @@
-local kv = require "@antiraid/kv"
 local datetime = require "@antiraid/datetime"
-local global = require "@antiraid-ext/global" 
 local discord = require "@discord-types/apiTypes"
 local Primitives = require "@antiraid-core/primitives"
-local promise = require "@antiraid/promise"
 
 type Interval = {
     --- At what interval to start the slow mode at
@@ -23,10 +20,9 @@ type Interval = {
 --- 
 --- Absolute: Absolute,{StartUnixTime},{StopUnixTime},{Slowdown}
 --- TimePerDay: TimePerDay,{StartHours}[:]{StartMinutes}[:]{StartSeconds},{StopHours}[:]{StopMinutes}[:]{StopSeconds},{Timezone},{Slowdown}
---- (ex: TimePerDay,12:00:00,13:00:00,UTC,5 [start slowmode of 5 seconds at 12:00:00 UTC and end it at 13:00:00 UTC] or TimePerDay,73340,46800,UTC,5 [start slowmode at 73340 seconds and end it at 46800 seconds])
+--- (ex: TimePerDay,12:00:00,13:00:00,UTC,5 [start slowmode of 5 seconds at 12:00:00 UTC and end it at 13:00:00 UTC]
 local function parseInterval(setting: string): {Interval}
     -- Remove whitespace
-    setting, _ = string.gsub(setting, "%s+", "")
     local settings = {}
     for _, setting in ipairs(string.split(setting, "|")) do
         local parts = string.split(setting, ",")
@@ -77,29 +73,8 @@ local function parseInterval(setting: string): {Interval}
     return settings
 end
 
-return function(channelId: string, ctx: Primitives.TemplateContext, msg: discord.MessageObject): number?
-    local CachedKvExecutor = global.update(
-        "AutoSlowdownKv",
-        function() return kv.new(ctx) end, 
-        function(v: kv.KvExecutor) return v end
-    )
-  
-    local globalSetting = promise.yield(CachedKvExecutor:get("AutoSlowdownIntervals:Global")) :: string?
-    local perChannelSetting = promise.yield(CachedKvExecutor:get("AutoSlowdownIntervals:" .. channelId)) :: string?
-
-    local settingsToUse: {Interval} = {}
-    if globalSetting ~= nil
-    then
-        settingsToUse = parseInterval(globalSetting)
-    end
-
-    if perChannelSetting ~= nil
-    then
-        local perChannelSettings = parseInterval(perChannelSetting)
-        for _, setting in ipairs(perChannelSettings) do
-            table.insert(settingsToUse, setting)
-        end
-    end
+return function(channelId: string, ctx: Primitives.TemplateContext, msg: discord.MessageObject, args: string): number?
+    local settingsToUse: {Interval} = parseInterval(args)
     
     local reject: Interval? = nil;
 

@@ -1,9 +1,7 @@
-local kv = require "@antiraid/kv"
 local global = require "@antiraid-ext/global" 
 local gcra = require "@antiraid-ext/gcra"
 local discord = require "@discord-types/apiTypes"
 local Primitives = require "@antiraid-core/primitives"
-local promise = require "@antiraid/promise"
 
 type AutoSlowdownSetting = {
     --- At what minimum message count should the slow mode be updated at
@@ -20,10 +18,8 @@ end
 
 --- Parses a AutoSlowdown setting
 ---
---- Format: {MessageCount},{Time},{Slowdown}|{MessageCount},{Slowdown}...
+--- Format: {MessageCount},{Time},{Slowdown}|{MessageCount},{Time},{Slowdown}...
 local function parseAutoslowdownSetting(setting: string): {AutoSlowdownSetting}
-    -- Remove whitespace
-    setting, _ = string.gsub(setting, "%s+", "")
     local settings = {}
     for _, setting in ipairs(string.split(setting, "|")) do
         local parts = string.split(setting, ",")
@@ -31,36 +27,15 @@ local function parseAutoslowdownSetting(setting: string): {AutoSlowdownSetting}
             table.insert(settings, {
                 MessageCount = tonumber(parts[1]) or 0,
                 Time = tonumber(parts[2]) or 1,
-                Slowdown = tonumber(parts[2]) or 0
+                Slowdown = tonumber(parts[3]) or 0
             })
         end
     end
     return settings
 end
 
-return function(channelId: string, ctx: Primitives.TemplateContext, msg: discord.MessageObject): number?
-    local CachedKvExecutor = global.update(
-        "AutoSlowdownKv",
-        function() return kv.new(ctx) end, 
-        function(v: kv.KvExecutor) return v end
-    )
-  
-    local globalSetting = promise.yield(CachedKvExecutor:get("AutoSlowdownRates:Global")) :: string?
-    local perChannelSetting = promise.yield(CachedKvExecutor:get("AutoSlowdownRates:" .. channelId)) :: string?
-
-    local settingsToUse: {AutoSlowdownSetting} = {}
-    if globalSetting ~= nil
-    then
-        settingsToUse = parseAutoslowdownSetting(globalSetting)
-    end
-
-    if perChannelSetting ~= nil
-    then
-        local perChannelSettings = parseAutoslowdownSetting(perChannelSetting)
-        for _, setting in ipairs(perChannelSettings) do
-            table.insert(settingsToUse, setting)
-        end
-    end
+return function(channelId: string, ctx: Primitives.TemplateContext, msg: discord.MessageObject, args: string): number?
+    local settingsToUse = parseAutoslowdownSetting(args)
     
     local reject: AutoSlowdownSetting? = nil;
     for _, setting in ipairs(settingsToUse) do

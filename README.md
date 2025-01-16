@@ -1,9 +1,42 @@
-# templating-template
+# auto-slowdown
 
-A simple template for AntiRaid templates. To download this, you'll need ``git`` installed. Then clone recursively with ```git clone --recursive``
+A plugin to automatically start and stop discord slowmode in a channel based on conditions. 
 
-## Bundling
+A condition can be set via AntiRaid templating key-value pairs using ``AutoSlowdown:Global`` for global conditions and ``AutoSlowdown:{channel_id}`` for channel specific conditions. Whitespace is ignored to allow for easier configuration.
 
-In order to use this template, you'll need a bundler that supports ``luaurc`` aliases. To make your life simpler, AntiRaid provides a prebuilt version of ``darklua`` with the PR for ``luaurc`` aliases support in as well as type function support. We hope that this PR will be merged upstream soon + type functions added by updating full moon but until then, you can download our prebuilt version of darklua from here: https://github.com/Anti-Raid/darklua/releases. Simply save this file as ``darklua.exe`` (Windows) or ``darklua``.
+## Configuration
 
-Simply either double-click ``build.cmd`` (Windows), or run ``make`` (all OS) to build the template. This will create a file called ``output.lua``. Copy paste the template in the AntiRaid website to use.
+**Format of strategy string: {strategy}={args} / {strategy}={args} / ...**
+
+Strategy is:
+- ``Interval`` for interval based slowdowns
+- ``Rate`` for rate based slowdowns
+
+### Interval
+
+**Format: {SingleInterval}|{SingleInterval}...**
+
+``SingleInterval: {Mode},{Mode.Opts}``
+
+Modes: 
+
+- ``Absolute: Absolute,{StartUnixTime},{StopUnixTime},{Slowdown}``
+- ``TimePerDay: TimePerDay,{StartHours}[:]{StartMinutes}[:]{StartSeconds},{StopHours}[:]{StopMinutes}[:]{StopSeconds},{Timezone},{Slowdown}``
+
+For example:
+
+``TimePerDay,12:00:00,13:00:00,UTC,5`` will start slowmode every day of 5 seconds at 12:00:00 UTC and end it at 13:00:00 UTC
+
+``TimePerDay,12:00:00,13:00:00,IST,10`` will start slowmode every day of 10 seconds at 12:00:00 IST and end it at 13:00:00 IST
+
+``Absolute,1609459200,1609462800,5`` will start slowmode at Unix epoch 1609459200 and end it at Unix epoch 1609462800
+
+### Rate
+
+**Format: {Rate},{Rate}...**
+
+``Rate: {MessageCount},{Time},{Slowdown}``
+
+For example:
+
+``5,10,7|10,10,5`` will start slowmode of 7 seconds at 5 messages per 10 seconds and 5 seconds at 10 messages per 10 seconds
