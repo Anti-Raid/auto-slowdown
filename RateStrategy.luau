@@ -34,7 +34,7 @@ local function parseAutoslowdownSetting(setting: string): {AutoSlowdownSetting}
     return settings
 end
 
-return function(channelId: string, ctx: Primitives.TemplateContext, msg: discord.MessageObject, args: string): number?
+return function(channelId: string, ctx: Primitives.TemplateContext, msg: discord.MessageObject, args: string): (number?, any)
     local settingsToUse = parseAutoslowdownSetting(args)
     
     local reject: AutoSlowdownSetting? = nil;
@@ -54,9 +54,9 @@ return function(channelId: string, ctx: Primitives.TemplateContext, msg: discord
     end
 
     if reject ~= nil then
-        return reject.Slowdown
+        return reject.Slowdown, settingsToUse
     end
 
-    return nil
+    return nil, settingsToUse
 end    
   

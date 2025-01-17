@@ -57,8 +57,8 @@ local function parseInterval(setting: string): {Interval}
             local timezone = parts[4]
 
             local tz = datetime.new(timezone)
-            local utcStartTime = tz.timeTzToUtc(startHours, startMinutes, startSeconds)
-            local utcStopTime = tz.timeTzToUtc(stopHours, stopMinutes, stopSeconds)
+            local utcStartTime = tz:timeTzToUtc(startHours, startMinutes, startSeconds)
+            local utcStopTime = tz:timeTzToUtc(stopHours, stopMinutes, stopSeconds)
 
             local slowdown = tonumber(parts[5])
             if slowdown == nil then continue end
@@ -73,12 +73,12 @@ local function parseInterval(setting: string): {Interval}
     return settings
 end
 
-return function(channelId: string, ctx: Primitives.TemplateContext, msg: discord.MessageObject, args: string): number?
+return function(channelId: string, ctx: Primitives.TemplateContext, msg: discord.MessageObject, args: string): (number?, any)
     local settingsToUse: {Interval} = parseInterval(args)
     
     local reject: Interval? = nil;
 
-    local now = os.clock()
+    local now = os.time()
     for _, setting in ipairs(settingsToUse) do
         -- Check if we are in the interval
         if now >= setting.Start and now <= setting.Stop then
@@ -95,9 +95,9 @@ return function(channelId: string, ctx: Primitives.TemplateContext, msg: discord
     end
 
     if reject ~= nil then
-        return reject.Slowdown
+        return reject.Slowdown, settingsToUse
     end
  
-    return nil
+    return nil, settingsToUse
 end    
    

@@ -12,16 +12,60 @@ local string_splitn = require "@antiraid-ext/strings/splitn"
   
 local evt: Primitives.Event, ctx: Primitives.TemplateContext = ...
 
+type CachedData = {
+    CurrentlySetSlowMode: number?,
+    PreviouslySetSlowMode: number?
+}
+
+-- Format: {CurrentlySetSlowMode},{PreviouslySetSlowMode}
+local function _getCachedData(ge: executors.GlobalExecutor, channelId: string): CachedData
+    local cachedData = promise.yield(ge.kv:get("AutoSlowdownCache:" .. channelId)) :: string?
+
+    if cachedData == nil then
+        return {
+            CurrentlySetSlowMode = nil,
+            PreviouslySetSlowMode = nil
+        }
+    end
+
+    local parts = string.split(cachedData, ",")
+    if #parts ~= 2 then
+        return {
+            CurrentlySetSlowMode = nil,
+            PreviouslySetSlowMode = nil
+        }
+    end
+
+    local currentlySetSlowMode = tonumber(parts[1]) :: number?
+    local previouslySetSlowMode = tonumber(parts[2]) :: number?
+
+    if currentlySetSlowMode == -1 then
+        currentlySetSlowMode = nil
+    end
+
+    if previouslySetSlowMode == -1 then
+        previouslySetSlowMode = nil
+    end
+
+    return {
+        CurrentlySetSlowMode = currentlySetSlowMode,
+        PreviouslySetSlowMode = previouslySetSlowMode
+    }
+end
+
+local function _setCachedData(ge: executors.GlobalExecutor, channelId: string, ce: CachedData)
+    promise.yield(ge.kv:set("AutoSlowdownCache:" .. channelId, tostring(ce.CurrentlySetSlowMode or -1) .. "," .. tostring(ce.PreviouslySetSlowMode or -1)))
+end
+
 --- Update the slow mode of a channel. Seconds must be between 0 and 21600
 ---
 --- @param channelId The ID of the channel to update
 local function updateSlowMode(ge: executors.GlobalExecutor, channelId: string, seconds: number, reason: string)
-    local lastSetSlowmode = global.get(
-        "AutoSlowdownLastSet:" .. channelId
-    )
-
-    if lastSetSlowmode ~= nil and lastSetSlowmode == seconds then
-        return -- We've already set this slow mode
+    -- Get autoslowmode cached data
+    local cachedData = _getCachedData(ge, channelId)
+    
+    if cachedData.CurrentlySetSlowMode == seconds then
+        return -- The currently set slow mode is the same as the current slow mode thats being requested to be set
     end
 
     -- Get the current slowmode
@@ -29,18 +73,14 @@ local function updateSlowMode(ge: executors.GlobalExecutor, channelId: string, s
         channel_id = channelId
     }))
 
+    cachedData.PreviouslySetSlowMode = current_channel.data.rate_limit_per_user or 0
+    cachedData.CurrentlySetSlowMode = seconds
+
+    -- Check if the channel is same as the slowmode, if so, set cached data and exit
     if current_channel.data.rate_limit_per_user == seconds then
+        _setCachedData(ge, channelId, cachedData) -- Update the cached data in this case before exiting
         return
     end
-
-    -- Set the last set slow mode
-    ge.kv:set("AutoSlowdown:LastSlowMode_" .. channelId, current_channel.data.rate_limit_per_user)
-
-    -- Set the last set slow mode
-    global.set(
-        "AutoSlowdownLastSet:" .. channelId,
-        seconds
-    )
 
     local discord_executor = discord.new(ctx);
     promise.yield(discord_executor:edit_channel({
@@ -50,33 +90,33 @@ local function updateSlowMode(ge: executors.GlobalExecutor, channelId: string, s
             rate_limit_per_user = seconds :: number?
         } :: restTypes.ModifyChannelRequest
     }))
+
+    _setCachedData(ge, channelId, cachedData) -- Update the cached data
 end
 
 --- Update the slow mode of a channel. Seconds must be between 0 and 21600
 ---
 --- @param channelId The ID of the channel to update
 local function revertSlowMode(ge: executors.GlobalExecutor, channelId: string, reason: string)
-    -- Get the last set slow mode
-    local lastSlowMode = ge.kv:get("AutoSlowdown:LastSlowMode_" .. channelId)
+    -- Get autoslowmode cached data
+    local cachedData = _getCachedData(ge, channelId)
 
-    if type(lastSlowMode) ~= "number" then
-        return
+    if cachedData.CurrentlySetSlowMode == nil then
+        return -- We don't have any currently set slowmode to revert to?
     end
 
-    -- Set the new slow mode to last slow mode
-    global.set(
-        "AutoSlowdownLastSet:" .. channelId,
-        lastSlowMode
-    )
+    cachedData.CurrentlySetSlowMode = -1; -- -1 is internally seen as nil for the cache stuff
 
     local discord_executor = discord.new(ctx);
     promise.yield(discord_executor:edit_channel({
         channel_id = channelId,
         reason = reason,
         data = {
-            rate_limit_per_user = lastSlowMode :: number?
+            rate_limit_per_user = cachedData.PreviouslySetSlowMode or 0
         } :: restTypes.ModifyChannelRequest
     }))
+
+    _setCachedData(ge, channelId, cachedData) -- Update the cached data
 end
 
 type ConfigString = {
@@ -92,13 +132,13 @@ local function ParseConfigString(config: string): {ConfigString}
     for _, strategy in ipairs(string.split(config, "/")) do
         local parts = string_splitn(strategy, "=", 1)
         if #parts == 2 then
-            table.insert(strategies, {parts[1], parts[2]})
+            table.insert(strategies, {Strategy = parts[1], Args = parts[2]})
         end
     end
     return strategies
 end
 
-type Strategy = (channelId: string, ctx: Primitives.TemplateContext, msg: discordTypes.MessageObject, args: string) -> number?
+type Strategy = (channelId: string, ctx: Primitives.TemplateContext, msg: discordTypes.MessageObject, args: string) -> (number?, any)
 
 local UseStrategies: {[string]: Strategy} = {
     Rate = RateStrategy,
@@ -137,6 +177,37 @@ Message(evt, function(msg)
         end
     end
 
+    if msg.content == "AutoSlowdown:Debug" then
+        local serde = require"@lune/serde" 
+        local interop = require"@antiraid/interop"
+        local strategyResults = {} :: { { Strategy: string, Args: string, Result: number? } }
+
+        for _, configOption in ipairs(configOptions) do
+            local strategy = UseStrategies[configOption.Strategy] 
+
+            if strategy == nil then
+                continue
+            end
+
+            local slowdown, output = strategy(channelId, ctx, msg, configOption.Args)
+            table.insert(strategyResults, {
+                Strategy = configOption.Strategy,
+                Args = configOption.Args,
+                Result = slowdown or interop.null,
+                Output = output or interop.null,
+                Now = os.time()
+            })
+        end
+
+        promise.yield(ge.discord:create_message({
+            channel_id = channelId,
+            data = {
+                content = ("AutoSlowdown:Debug\n" .. "Global: " .. tostring(globalSetting) .. "\nPerChannel: " .. tostring(perChannelSetting) .. "\nConfigOptions: " .. serde.encode("json", configOptions) .. "\nResults: " .. serde.encode("json", strategyResults)) :: string?
+            }
+        }))
+        return
+    end
+
     local maxSlowdown: number? = nil
     for _, configOption in ipairs(configOptions) do
         local strategy = UseStrategies[configOption.Strategy] 
@@ -152,8 +223,6 @@ Message(evt, function(msg)
             else 
                 maxSlowdown = slowdown
             end
-
-            break
         end
     end
 
