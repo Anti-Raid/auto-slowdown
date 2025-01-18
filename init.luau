@@ -6,6 +6,7 @@ local Primitives = require "@antiraid-core/primitives"
 local RateStrategy = require "./RateStrategy"
 local IntervalStrategy = require "./IntervalStrategy"
 local Message = require "@antiraid-ext/events/discord/Message"
+local ExternalKeyUpdate = require "@antiraid-ext/events/antiraid/ExternalKeyUpdate"
 local restTypes = require "@discord-types/restTypes"
 local discordTypes = require "@discord-types/apiTypes"
 local string_splitn = require "@antiraid-ext/strings/splitn"
@@ -13,48 +14,66 @@ local string_splitn = require "@antiraid-ext/strings/splitn"
 local evt: Primitives.Event, ctx: Primitives.TemplateContext = ...
 
 type CachedData = {
-    CurrentlySetSlowMode: number?,
-    PreviouslySetSlowMode: number?
+    CurrentlySetSlowMode: number,
+    PreviouslySetSlowMode: number
 }
 
 -- Format: {CurrentlySetSlowMode},{PreviouslySetSlowMode}
 local function _getCachedData(ge: executors.GlobalExecutor, channelId: string): CachedData
-    local cachedData = promise.yield(ge.kv:get("AutoSlowdownCache:" .. channelId)) :: string?
+    -- Check globals
+    local globalCachedData: {[string]: CachedData} = global.get("AutoSlowdownCache")
+
+    if globalCachedData ~= nil then
+        local tab = globalCachedData[channelId]
+
+        if tab == nil then
+            tab = {
+                CurrentlySetSlowMode = -1,
+                PreviouslySetSlowMode = -1
+            } :: CachedData
+            globalCachedData[channelId] = tab
+        end
+
+        return tab
+    end
+
+    -- Fetch from KV
+    local cachedData = promise.yield(ge.kv:get("AutoSlowdownCache")) :: {[string]: CachedData}?
 
     if cachedData == nil then
-        return {
-            CurrentlySetSlowMode = nil,
-            PreviouslySetSlowMode = nil
+        local tab = {
+            CurrentlySetSlowMode = -1,
+            PreviouslySetSlowMode = -1
         }
+        global.set("AutoSlowdownCache", {
+            [channelId] = tab
+        })
+        return tab
     end
 
-    local parts = string.split(cachedData, ",")
-    if #parts ~= 2 then
-        return {
-            CurrentlySetSlowMode = nil,
-            PreviouslySetSlowMode = nil
-        }
+    local tab = cachedData[channelId]
+
+    if tab == nil then
+        tab = {
+            CurrentlySetSlowMode = -1,
+            PreviouslySetSlowMode = -1
+        } :: CachedData
+        cachedData[channelId] = tab
     end
 
-    local currentlySetSlowMode = tonumber(parts[1]) :: number?
-    local previouslySetSlowMode = tonumber(parts[2]) :: number?
+    global.set("AutoSlowdownCache", cachedData) -- Save the data back to globals
 
-    if currentlySetSlowMode == -1 then
-        currentlySetSlowMode = nil
-    end
-
-    if previouslySetSlowMode == -1 then
-        previouslySetSlowMode = nil
-    end
-
-    return {
-        CurrentlySetSlowMode = currentlySetSlowMode,
-        PreviouslySetSlowMode = previouslySetSlowMode
-    }
+    return tab
 end
 
-local function _setCachedData(ge: executors.GlobalExecutor, channelId: string, ce: CachedData)
-    promise.yield(ge.kv:set("AutoSlowdownCache:" .. channelId, tostring(ce.CurrentlySetSlowMode or -1) .. "," .. tostring(ce.PreviouslySetSlowMode or -1)))
+local function _setCachedData(ge: executors.GlobalExecutor)
+    local cachedData = global.get("AutoSlowdownCache") :: {[string]: CachedData}
+
+    if cachedData == nil then
+        return
+    end
+
+    promise.yield(ge.kv:set("AutoSlowdownCache", cachedData))
 end
 
 --- Update the slow mode of a channel. Seconds must be between 0 and 21600
@@ -78,7 +97,7 @@ local function updateSlowMode(ge: executors.GlobalExecutor, channelId: string, s
 
     -- Check if the channel is same as the slowmode, if so, set cached data and exit
     if current_channel.data.rate_limit_per_user == seconds then
-        _setCachedData(ge, channelId, cachedData) -- Update the cached data in this case before exiting
+        _setCachedData(ge) -- Update the cached data in this case before exiting
         return
     end
 
@@ -91,7 +110,7 @@ local function updateSlowMode(ge: executors.GlobalExecutor, channelId: string, s
         } :: restTypes.ModifyChannelRequest
     }))
 
-    _setCachedData(ge, channelId, cachedData) -- Update the cached data
+    _setCachedData(ge) -- Update the cached data
 end
 
 --- Update the slow mode of a channel. Seconds must be between 0 and 21600
@@ -101,22 +120,27 @@ local function revertSlowMode(ge: executors.GlobalExecutor, channelId: string, r
     -- Get autoslowmode cached data
     local cachedData = _getCachedData(ge, channelId)
 
-    if cachedData.CurrentlySetSlowMode == nil then
+    if cachedData.CurrentlySetSlowMode == -1 then
         return -- We don't have any currently set slowmode to revert to?
     end
 
     cachedData.CurrentlySetSlowMode = -1; -- -1 is internally seen as nil for the cache stuff
+
+    local prevSlowMode = cachedData.PreviouslySetSlowMode
+    if prevSlowMode == -1 then
+        prevSlowMode = 0
+    end
 
     local discord_executor = discord.new(ctx);
     promise.yield(discord_executor:edit_channel({
         channel_id = channelId,
         reason = reason,
         data = {
-            rate_limit_per_user = cachedData.PreviouslySetSlowMode or 0
+            rate_limit_per_user = prevSlowMode
         } :: restTypes.ModifyChannelRequest
     }))
 
-    _setCachedData(ge, channelId, cachedData) -- Update the cached data
+    _setCachedData(ge) -- Update the cached data
 end
 
 type ConfigString = {
@@ -145,6 +169,31 @@ local UseStrategies: {[string]: Strategy} = {
     Interval = IntervalStrategy
 }
 
+--- Returns the config string for a given key, while handling caching
+local function _getConfigString(ge: executors.GlobalExecutor, key: string): (string?, boolean)
+    local cachedValueStore = global.update("AutoSlowdownConfigCache", function() return {} end, function(v: {[string]: { Args: string? }}) return v end)
+    
+    local cachedValue = cachedValueStore[key]
+
+    if cachedValue ~= nil then
+        return cachedValue.Args, true -- This may be nil but we know its cached
+    end
+
+    local value = promise.yield(ge.kv:get(key)) :: string?
+
+    cachedValueStore[key] = { Args = value }
+    return value, false
+end
+
+ExternalKeyUpdate(evt, function(data) 
+    -- Drop the key if it matches the prefix
+    if string.sub(data.key_modified, 1, 13) == "AutoSlowdown:" then
+        local cachedValueStore = global.update("AutoSlowdownConfigCache", function() return {} end, function(v: {[string]: { Args: string? }}) return v end)
+        cachedValueStore[data.key_modified] = nil -- Nil out the cache
+        return
+    end
+end)
+
 Message(evt, function(msg)
     local channelId = msg.channel_id
     
@@ -157,10 +206,10 @@ Message(evt, function(msg)
         function() return executors.NewGlobalExecutor(ctx) end,
         function(v: executors.GlobalExecutor) return v end
     )
-  
-    local globalSetting = promise.yield(ge.kv:get("AutoSlowdown:Global")) :: string?
-    local perChannelSetting = promise.yield(ge.kv:get("AutoSlowdown:" .. channelId)) :: string?
 
+    local globalSetting, isGlobalSettingCached = _getConfigString(ge, "AutoSlowdown:Global")
+    local perChannelSetting, isPerChannelSettingCached = _getConfigString(ge, "AutoSlowdown:" .. channelId)
+  
     local configOptions: {ConfigString} = {}
 
     if globalSetting ~= nil then
@@ -199,12 +248,16 @@ Message(evt, function(msg)
             })
         end
 
+        local cachedValueStore = global.update("AutoSlowdownConfigCache", function() return {} end, function(v: {[string]: { Args: string? }}) return v end)
         promise.yield(ge.discord:create_message({
             channel_id = channelId,
             data = {
-                content = ("AutoSlowdown:Debug\n" .. "Global: " .. tostring(globalSetting) .. "\nPerChannel: " .. tostring(perChannelSetting) .. "\nConfigOptions: " .. serde.encode("json", configOptions) .. "\nResults: " .. serde.encode("json", strategyResults)) :: string?
+                content = ("AutoSlowdown:Debug\n" .. "Global: " .. tostring(globalSetting) .. "\nPerChannel: " .. tostring(perChannelSetting) .. "\nConfigOptions: " .. serde.encode("json", configOptions) .. "\nResults: " .. serde.encode("json", strategyResults) .. "\nCachedData: " .. serde.encode("json", cachedValueStore) .. "\nCacheStatus: " .. serde.encode("json", { global = isGlobalSettingCached, [channelId] = isPerChannelSettingCached})) :: string?
             }
         }))
+
+        -- Clear the cache too
+        --table.clear(cachedValueStore :: any)
         return
     end
 
