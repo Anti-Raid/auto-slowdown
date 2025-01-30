@@ -269,7 +269,7 @@ Message(evt, function(msg)
             continue
         end
 
-        local slowdown = strategy(channelId, ctx, msg, configOption.Args)
+        local slowdown, _ = strategy(channelId, ctx, msg, configOption.Args)
         if slowdown ~= nil then
             if maxSlowdown ~= nil then
                 maxSlowdown = math.max(maxSlowdown, slowdown)
